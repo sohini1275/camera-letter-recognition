@@ -14,12 +14,13 @@ export default function CameraPredictor() {
   const [errMsg, setErrMsg] = useState(null);
   const [stream, setStream] = useState(null);
 
+  // Load model once at mount
   useEffect(() => {
     let cancelled = false;
     async function loadModel() {
       setErrMsg(null);
       try {
-        const m = await tf.loadGraphModel("/model.json"); // deployed path (public/model.json)
+        const m = await tf.loadGraphModel("/model.json");
         console.log("Model loaded (graph):", m);
         if (!cancelled) setModel(m);
       } catch (err) {
@@ -28,13 +29,36 @@ export default function CameraPredictor() {
       }
     }
     loadModel();
-    return () => { cancelled = true; };
+
+    // cleanup on unmount
+    return () => {
+      cancelled = true;
+      // stop camera if running
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+      if (videoRef.current) {
+        try {
+          videoRef.current.pause();
+          videoRef.current.srcObject = null;
+        } catch (e) { /* ignore */ }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Start camera
   async function startCamera() {
     if (running || !model) return;
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false
+      });
       videoRef.current.srcObject = s;
       setStream(s);
       await videoRef.current.play();
@@ -46,6 +70,7 @@ export default function CameraPredictor() {
     }
   }
 
+  // Stop camera
   function stopCamera() {
     setRunning(false);
     if (rafRef.current) {
@@ -57,11 +82,14 @@ export default function CameraPredictor() {
       setStream(null);
     }
     if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.srcObject = null;
+      try {
+        videoRef.current.pause();
+        videoRef.current.srcObject = null;
+      } catch (e) { /* ignore */ }
     }
   }
 
+  // Prediction loop
   async function predictLoop() {
     if (!running) {
       rafRef.current = null;
@@ -77,74 +105,88 @@ export default function CameraPredictor() {
     const sctx = small.getContext("2d");
     sctx.drawImage(videoRef.current, 0, 0, 28, 28);
 
-    // draw preview
+    // draw preview (scaled)
     const preview = previewRef.current;
     const pctx = preview.getContext("2d");
     pctx.imageSmoothingEnabled = false;
     pctx.drawImage(small, 0, 0, preview.width, preview.height);
 
-    // make input tensor
+    // make input tensor inside tidy
     const tensor = tf.tidy(() => {
       let t = tf.browser.fromPixels(small); // [28,28,3]
       t = t.mean(2).toFloat();              // [28,28]
       t = t.div(255.0);                     // [0,1]
-      // t = tf.sub(1, t); // invert if needed
-      // t = t.mul(2).sub(1); // to [-1,1] if needed
+      // If needed: invert or map to [-1,1]
+      // t = tf.sub(1, t);   // invert
+      // t = t.mul(2).sub(1); // to [-1,1]
       return t.expandDims(0).expandDims(-1); // [1,28,28,1]
     });
 
+    let out = null;
     try {
       // model.execute can return: Tensor, Array<Tensor>, or {outputName: Tensor}
-      const out = model.execute(tensor);
+      out = model.execute(tensor);
 
       // normalize to a single tensor and read its data async
       let tensorOut;
       if (Array.isArray(out)) {
         tensorOut = out[0];
       } else if (out && typeof out === 'object' && !('shape' in out)) {
-        // object/dict: pick first property
+        // object/dict: pick the first property
         const keys = Object.keys(out);
         tensorOut = out[keys[0]];
       } else {
         tensorOut = out;
       }
 
-      const probsArr = Array.from(await tensorOut.data()); // async read
+      // read probabilities asynchronously
+      const probsArr = Array.from(await tensorOut.data());
+
       // build top-3
       const top = probsArr
-        .map((p,i)=>({i,p}))
-        .sort((a,b)=>b.p-a.p)
-        .slice(0,3)
-        .map(x=>({ index: x.i, letter: String.fromCharCode(65 + x.i), p: x.p }));
+        .map((p, i) => ({ i, p }))
+        .sort((a, b) => b.p - a.p)
+        .slice(0, 3)
+        .map(x => ({ index: x.i, letter: String.fromCharCode(65 + x.i), p: x.p }));
 
+      // debug logs to ensure state update runs
       console.log('DEBUG top before setPreds:', top);
       setPreds(top);
       console.log('DEBUG setPreds called');
 
-
       // dispose outputs (if array or dict, dispose all)
-      if (Array.isArray(out)) out.forEach(t=>tf.dispose(t));
-      else if (out && typeof out === 'object' && !('shape' in out)) {
-        Object.values(out).forEach(t=>tf.dispose(t));
+      if (Array.isArray(out)) {
+        out.forEach(t => tf.dispose(t));
+      } else if (out && typeof out === 'object' && !('shape' in out)) {
+        Object.values(out).forEach(t => tf.dispose(t));
       } else {
         tf.dispose(out);
       }
     } catch (err) {
       console.error("predict error", err);
       setErrMsg(String(err));
+      // attempt to dispose any returned tensors if present
+      try {
+        if (Array.isArray(out)) out.forEach(t => tf.dispose(t));
+        else if (out && typeof out === 'object' && !('shape' in out)) Object.values(out).forEach(t => tf.dispose(t));
+        else tf.dispose(out);
+      } catch (e) { /* ignore disposal errors */ }
     } finally {
-      tf.dispose(tensor);
+      // dispose input tensor created by tidy (tidy already returns tensor - still call dispose to be safe)
+      try { tf.dispose(tensor); } catch (e) {}
     }
 
     rafRef.current = requestAnimationFrame(predictLoop);
   }
 
+  // Retry loading model
   function retryLoad() {
     setModel(null);
     setErrMsg(null);
     (async () => {
       try {
         const m = await tf.loadGraphModel("/model.json");
+        console.log("Model reloaded:");
         setModel(m);
       } catch (err) {
         console.error("Retry failed:", err);
@@ -153,13 +195,14 @@ export default function CameraPredictor() {
     })();
   }
 
+  // Capture & send labeled correction (image + label)
   async function sendCorrection(label) {
     const preview = previewRef.current;
     const dataUrl = preview.toDataURL("image/png");
     try {
       await fetch('/api/log-example', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json', 'x-feedback-token': process.env.NEXT_PUBLIC_FEEDBACK_TOKEN || ''},
+        headers: { 'Content-Type': 'application/json', 'x-feedback-token': process.env.NEXT_PUBLIC_FEEDBACK_TOKEN || '' },
         body: JSON.stringify({ imageDataUrl: dataUrl, label })
       });
       alert('Thanks — example submitted.');
@@ -194,7 +237,7 @@ export default function CameraPredictor() {
             <strong>Top predictions</strong>
             <ol>
               {preds.length ? preds.map(p => (
-                <li key={p.index}>{p.letter} — {(p.p*100).toFixed(1)}%</li>
+                <li key={p.index}>{p.letter} — {(p.p * 100).toFixed(1)}%</li>
               )) : <li>—</li>}
             </ol>
           </div>
