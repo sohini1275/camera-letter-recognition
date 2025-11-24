@@ -4,8 +4,10 @@ import * as tf from "@tensorflow/tfjs";
 
 export default function CameraPredictor() {
   const videoRef = useRef(null);
-  const previewRef = useRef(null); // visible preview canvas (scaled)
-  const smallRef = useRef(null);   // 28x28 offscreen canvas (but visible too)
+  const previewRef = useRef(null);
+  const smallRef = useRef(null);
+  const rafRef = useRef(null);
+
   const [model, setModel] = useState(null);
   const [running, setRunning] = useState(false);
   const [preds, setPreds] = useState([]);
@@ -15,28 +17,32 @@ export default function CameraPredictor() {
   // Load model once at mount
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    async function loadModel() {
+      setErrMsg(null);
       try {
-        const m = await tf.loadLayersModel("/model.json");
+        const m = await tf.loadLayersModel("/model.json"); // production: no cache-bust
+        console.log("Model loaded:");
+        if (m.summary) m.summary();
         if (!cancelled) setModel(m);
       } catch (err) {
         console.error("Model load failed:", err);
         setErrMsg(err.message || String(err));
       }
-    })();
+    }
+    loadModel();
     return () => { cancelled = true; };
   }, []);
 
   // Start camera
   async function startCamera() {
-    if (running) return;
+    if (running || !model) return;
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
       videoRef.current.srcObject = s;
       setStream(s);
       await videoRef.current.play();
       setRunning(true);
-      requestAnimationFrame(predictLoop);
+      if (!rafRef.current) rafRef.current = requestAnimationFrame(predictLoop);
     } catch (e) {
       console.error("Camera start error:", e);
       setErrMsg(String(e));
@@ -46,6 +52,10 @@ export default function CameraPredictor() {
   // Stop camera
   function stopCamera() {
     setRunning(false);
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
       setStream(null);
@@ -58,38 +68,37 @@ export default function CameraPredictor() {
 
   // Prediction loop
   async function predictLoop() {
-    if (!running) return;
+    if (!running) {
+      rafRef.current = null;
+      return;
+    }
     if (!model || !videoRef.current || videoRef.current.readyState < 2) {
-      requestAnimationFrame(predictLoop);
+      rafRef.current = requestAnimationFrame(predictLoop);
       return;
     }
 
-    // draw to small canvas (28x28)
     const small = smallRef.current;
     const sctx = small.getContext("2d");
     sctx.drawImage(videoRef.current, 0, 0, 28, 28);
 
-    // also draw scaled preview for visibility (e.g., 140x140)
     const preview = previewRef.current;
     const pctx = preview.getContext("2d");
     pctx.imageSmoothingEnabled = false;
     pctx.drawImage(small, 0, 0, preview.width, preview.height);
 
-    // create tensor
     const tensor = tf.tidy(() => {
       let t = tf.browser.fromPixels(small); // [28,28,3]
       t = t.mean(2).toFloat();              // [28,28]
       t = t.div(255.0);                     // [0,1]
-      // If training used inverted colors, uncomment next line:
-      // t = tf.sub(1, t);
-      // if your training used [-1,1], convert: t = t.mul(2).sub(1);
+      // If needed: invert or map to [-1,1] (uncomment one)
+      // t = tf.sub(1, t);   // invert
+      // t = t.mul(2).sub(1); // to [-1,1]
       return t.expandDims(0).expandDims(-1); // [1,28,28,1]
     });
 
     try {
       const logits = model.predict(tensor);
       const probs = Array.from(await logits.data());
-      // top-3
       const top = probs
         .map((p,i)=>({i,p}))
         .sort((a,b)=>b.p-a.p)
@@ -104,12 +113,29 @@ export default function CameraPredictor() {
       tf.dispose(tensor);
     }
 
-    requestAnimationFrame(predictLoop);
+    rafRef.current = requestAnimationFrame(predictLoop);
+  }
+
+  // Retry loading model
+  function retryLoad() {
+    setModel(null);
+    setErrMsg(null);
+    // re-run the effect by manually loading
+    (async () => {
+      try {
+        const m = await tf.loadLayersModel("/model.json");
+        console.log("Model reloaded:");
+        if (m.summary) m.summary();
+        setModel(m);
+      } catch (err) {
+        console.error("Retry failed:", err);
+        setErrMsg(err.message || String(err));
+      }
+    })();
   }
 
   // Capture & send labeled correction (image + label)
   async function sendCorrection(label) {
-    // snapshot from preview canvas as dataURL
     const preview = previewRef.current;
     const dataUrl = preview.toDataURL("image/png");
     try {
@@ -157,8 +183,12 @@ export default function CameraPredictor() {
         </div>
       </div>
 
-      {errMsg && <div style={{ color: 'red', marginTop: 12 }}>Error: {errMsg}</div>}
-      {!model && <div style={{ marginTop: 12 }}>Loading model... make sure /model.json is present in <code>/public</code>.</div>}
+      {errMsg && (
+        <div style={{ color: 'red', marginTop: 12 }}>
+          Error: {errMsg} <button onClick={retryLoad} style={{ marginLeft: 8 }}>Retry load</button>
+        </div>
+      )}
+      {!model && !errMsg && <div style={{ marginTop: 12 }}>Loading model... make sure /model.json is present in <code>/public</code>.</div>}
     </div>
   );
 }
