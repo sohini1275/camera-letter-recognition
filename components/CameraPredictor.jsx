@@ -117,7 +117,10 @@ export default function CameraPredictor() {
         .slice(0,3)
         .map(x=>({ index: x.i, letter: String.fromCharCode(65 + x.i), p: x.p }));
 
+      console.log('DEBUG top before setPreds:', top);
       setPreds(top);
+      console.log('DEBUG setPreds called');
+
 
       // dispose outputs (if array or dict, dispose all)
       if (Array.isArray(out)) out.forEach(t=>tf.dispose(t));
