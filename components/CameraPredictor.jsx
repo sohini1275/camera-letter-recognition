@@ -14,15 +14,13 @@ export default function CameraPredictor() {
   const [errMsg, setErrMsg] = useState(null);
   const [stream, setStream] = useState(null);
 
-  // Load model once at mount
   useEffect(() => {
     let cancelled = false;
     async function loadModel() {
       setErrMsg(null);
       try {
-        const m = await tf.loadLayersModel("/model.json"); // production: no cache-bust
-        console.log("Model loaded:");
-        if (m.summary) m.summary();
+        const m = await tf.loadGraphModel("/model.json"); // deployed path (public/model.json)
+        console.log("Model loaded (graph):", m);
         if (!cancelled) setModel(m);
       } catch (err) {
         console.error("Model load failed:", err);
@@ -33,7 +31,6 @@ export default function CameraPredictor() {
     return () => { cancelled = true; };
   }, []);
 
-  // Start camera
   async function startCamera() {
     if (running || !model) return;
     try {
@@ -49,7 +46,6 @@ export default function CameraPredictor() {
     }
   }
 
-  // Stop camera
   function stopCamera() {
     setRunning(false);
     if (rafRef.current) {
@@ -66,7 +62,6 @@ export default function CameraPredictor() {
     }
   }
 
-  // Prediction loop
   async function predictLoop() {
     if (!running) {
       rafRef.current = null;
@@ -77,35 +72,60 @@ export default function CameraPredictor() {
       return;
     }
 
+    // draw to small canvas (28x28)
     const small = smallRef.current;
     const sctx = small.getContext("2d");
     sctx.drawImage(videoRef.current, 0, 0, 28, 28);
 
+    // draw preview
     const preview = previewRef.current;
     const pctx = preview.getContext("2d");
     pctx.imageSmoothingEnabled = false;
     pctx.drawImage(small, 0, 0, preview.width, preview.height);
 
+    // make input tensor
     const tensor = tf.tidy(() => {
       let t = tf.browser.fromPixels(small); // [28,28,3]
       t = t.mean(2).toFloat();              // [28,28]
       t = t.div(255.0);                     // [0,1]
-      // If needed: invert or map to [-1,1] (uncomment one)
-      // t = tf.sub(1, t);   // invert
-      // t = t.mul(2).sub(1); // to [-1,1]
+      // t = tf.sub(1, t); // invert if needed
+      // t = t.mul(2).sub(1); // to [-1,1] if needed
       return t.expandDims(0).expandDims(-1); // [1,28,28,1]
     });
 
     try {
-      const logits = model.predict(tensor);
-      const probs = Array.from(await logits.data());
-      const top = probs
+      // model.execute can return: Tensor, Array<Tensor>, or {outputName: Tensor}
+      const out = model.execute(tensor);
+
+      // normalize to a single tensor and read its data async
+      let tensorOut;
+      if (Array.isArray(out)) {
+        tensorOut = out[0];
+      } else if (out && typeof out === 'object' && !('shape' in out)) {
+        // object/dict: pick first property
+        const keys = Object.keys(out);
+        tensorOut = out[keys[0]];
+      } else {
+        tensorOut = out;
+      }
+
+      const probsArr = Array.from(await tensorOut.data()); // async read
+      // build top-3
+      const top = probsArr
         .map((p,i)=>({i,p}))
         .sort((a,b)=>b.p-a.p)
         .slice(0,3)
         .map(x=>({ index: x.i, letter: String.fromCharCode(65 + x.i), p: x.p }));
+
       setPreds(top);
-      tf.dispose([logits]);
+
+      // dispose outputs (if array or dict, dispose all)
+      if (Array.isArray(out)) out.forEach(t=>tf.dispose(t));
+      else if (out && typeof out === 'object' && !('shape' in out)) {
+        Object.values(out).forEach(t=>tf.dispose(t));
+      } else {
+        tf.dispose(out);
+      }
     } catch (err) {
       console.error("predict error", err);
       setErrMsg(String(err));
@@ -116,16 +136,12 @@ export default function CameraPredictor() {
     rafRef.current = requestAnimationFrame(predictLoop);
   }
 
-  // Retry loading model
   function retryLoad() {
     setModel(null);
     setErrMsg(null);
-    // re-run the effect by manually loading
     (async () => {
       try {
-        const m = await tf.loadLayersModel("/model.json");
-        console.log("Model reloaded:");
-        if (m.summary) m.summary();
+        const m = await tf.loadGraphModel("/model.json");
         setModel(m);
       } catch (err) {
         console.error("Retry failed:", err);
@@ -134,7 +150,6 @@ export default function CameraPredictor() {
     })();
   }
 
-  // Capture & send labeled correction (image + label)
   async function sendCorrection(label) {
     const preview = previewRef.current;
     const dataUrl = preview.toDataURL("image/png");
