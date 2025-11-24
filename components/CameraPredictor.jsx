@@ -150,9 +150,13 @@ export default function CameraPredictor() {
         .map(x => ({ index: x.i, letter: String.fromCharCode(65 + x.i), p: x.p }));
 
       // debug logs to ensure state update runs
-      console.log('DEBUG top before setPreds:', top);
-      setPreds(top);
-      console.log('DEBUG setPreds called');
+      console.log("DEBUG top before setPreds:", top);
+
+      // force React update by assigning new array instance
+      setPreds(() => [...top]);
+
+      console.log("DEBUG setPreds after force-update");
+
 
       // dispose outputs (if array or dict, dispose all)
       if (Array.isArray(out)) {
