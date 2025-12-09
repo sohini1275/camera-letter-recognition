@@ -26,7 +26,7 @@ export default function CameraPredictor() {
   const [errMsg, setErrMsg] = useState(null);
   const [stream, setStream] = useState(null);
 
-  // Load model once at mount
+  // Try to load model once at mount (if it fails, we still show preview)
   useEffect(() => {
     let cancelled = false;
     async function loadModel() {
@@ -78,7 +78,7 @@ export default function CameraPredictor() {
       await videoRef.current.play();
       setRunning(true);
       if (!rafRef.current) {
-        rafRef.current = requestAnimationFrame(predictLoop);
+        rafRef.current = requestAnimationFrame(previewLoop);
       }
     } catch (e) {
       console.error("Camera start error:", e);
@@ -107,8 +107,8 @@ export default function CameraPredictor() {
     }
   }
 
-  // Prediction + preview loop
-  async function predictLoop() {
+  // 🔁 Preview loop (NO TF / NO PREDICTION, just drawing)
+  async function previewLoop() {
     if (!running) {
       rafRef.current = null;
       return;
@@ -120,92 +120,25 @@ export default function CameraPredictor() {
 
     // Need all elements and video must be ready
     if (!video || !small || !preview || video.readyState < 2) {
-      rafRef.current = requestAnimationFrame(predictLoop);
+      rafRef.current = requestAnimationFrame(previewLoop);
       return;
     }
 
-    // ✅ Always draw what the camera sees (even if model isn't loaded)
+    // Draw camera frame to 28x28 canvas
     const sctx = small.getContext("2d");
     sctx.drawImage(video, 0, 0, 28, 28);
 
+    // Draw scaled-up version to preview canvas
     const pctx = preview.getContext("2d");
     pctx.imageSmoothingEnabled = false;
     pctx.drawImage(small, 0, 0, preview.width, preview.height);
 
-    // If model isn't ready or failed to load, just show preview and loop
-    if (!model) {
-      rafRef.current = requestAnimationFrame(predictLoop);
-      return;
-    }
+    // (Optional) Later you can re-add TF prediction here
 
-    // From here: run prediction
-    const tensor = tf.tidy(() => {
-      let t = tf.browser.fromPixels(small); // [28,28,3]
-      t = tf.image.rgbToGrayscale(t).squeeze(); // [28,28]
-      t = t.div(255.0); // [0,1]
-      return t.expandDims(0).expandDims(-1); // [1,28,28,1]
-    });
-
-    let out = null;
-    try {
-      out = model.predict(tensor);
-
-      let tensorOut;
-      if (Array.isArray(out)) {
-        tensorOut = out[0];
-      } else if (out && typeof out === "object" && !("shape" in out)) {
-        const keys = Object.keys(out);
-        tensorOut = out[keys[0]];
-      } else {
-        tensorOut = out;
-      }
-
-      const probsArr = Array.from(await tensorOut.data());
-
-      const top = probsArr
-        .map((p, i) => ({ i, p }))
-        .sort((a, b) => b.p - a.p)
-        .slice(0, 3)
-        .map((x) => ({
-          index: x.i,
-          letter: String.fromCharCode(65 + x.i),
-          p: x.p,
-        }));
-
-      console.log("DEBUG top before setPreds:", top);
-      setPreds(() => [...top]);
-      console.log("DEBUG setPreds after force-update");
-
-      if (Array.isArray(out)) {
-        out.forEach((t) => tf.dispose(t));
-      } else if (out && typeof out === "object" && !("shape" in out)) {
-        Object.values(out).forEach((t) => tf.dispose(t));
-      } else {
-        tf.dispose(out);
-      }
-    } catch (err) {
-      console.error("predict error", err);
-      setErrMsg(String(err));
-      try {
-        if (Array.isArray(out)) out.forEach((t) => tf.dispose(t));
-        else if (out && typeof out === "object" && !("shape" in out))
-          Object.values(out).forEach((t) => tf.dispose(t));
-        else tf.dispose(out);
-      } catch (e) {
-        /* ignore */
-      }
-    } finally {
-      try {
-        tf.dispose(tensor);
-      } catch (e) {
-        /* ignore */
-      }
-    }
-
-    rafRef.current = requestAnimationFrame(predictLoop);
+    rafRef.current = requestAnimationFrame(previewLoop);
   }
 
-  // Retry loading model
+  // Retry loading model (for after you fix compatibility)
   function retryLoad() {
     setModel(null);
     setErrMsg(null);
@@ -273,10 +206,11 @@ export default function CameraPredictor() {
               Send top-1 as correction
             </button>
           </div>
-          {!model && !errMsg && (
+          {!model && (
             <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-              Model still loading (or failed). Camera preview works; predictions
-              will appear once the model loads.
+              Model is not loaded in the browser yet (TFJS/Keras compatibility
+              issue). Camera preview below matches the 28×28 input used for
+              training in Python.
             </div>
           )}
         </div>
@@ -293,6 +227,7 @@ export default function CameraPredictor() {
               imageRendering: "pixelated",
               border: "1px solid #ccc",
               borderRadius: 6,
+              background: "#000",
             }}
           />
           <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
@@ -310,7 +245,8 @@ export default function CameraPredictor() {
               width: 56,
               height: 56,
               imageRendering: "pixelated",
-              border: "1px solid #eee", // ✅ fixed syntax here
+              border: "1px solid #eee",
+              background: "#000",
             }}
           />
           <div style={{ marginTop: 12 }}>
@@ -332,7 +268,7 @@ export default function CameraPredictor() {
 
       {errMsg && (
         <div style={{ color: "red", marginTop: 12 }}>
-          Error: {errMsg}
+          Error loading model in browser: {errMsg}
           <button onClick={retryLoad} style={{ marginLeft: 8 }}>
             Retry load
           </button>
@@ -341,7 +277,8 @@ export default function CameraPredictor() {
       {!model && !errMsg && (
         <div style={{ marginTop: 12 }}>
           Loading model... make sure /model.json is present in{" "}
-          <code>/public</code>.
+          <code>/public</code>. (For the review, you can show predictions from
+          your Python notebook.)
         </div>
       )}
     </div>
