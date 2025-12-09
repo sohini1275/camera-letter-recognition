@@ -45,7 +45,6 @@ export default function CameraPredictor() {
     // cleanup on unmount
     return () => {
       cancelled = true;
-      // stop camera if running
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
@@ -73,6 +72,7 @@ export default function CameraPredictor() {
         video: { facingMode: "environment" },
         audio: false,
       });
+      if (!videoRef.current) return;
       videoRef.current.srcObject = s;
       setStream(s);
       await videoRef.current.play();
@@ -107,30 +107,38 @@ export default function CameraPredictor() {
     }
   }
 
-  // Prediction loop
+  // Prediction + preview loop
   async function predictLoop() {
     if (!running) {
       rafRef.current = null;
       return;
     }
-    if (!model || !videoRef.current || videoRef.current.readyState < 2) {
-      // camera can be running even if model isn't ready yet
+
+    const video = videoRef.current;
+    const small = smallRef.current;
+    const preview = previewRef.current;
+
+    // Need all elements and video must be ready
+    if (!video || !small || !preview || video.readyState < 2) {
       rafRef.current = requestAnimationFrame(predictLoop);
       return;
     }
 
-    // draw to small canvas (28x28)
-    const small = smallRef.current;
+    // ✅ Always draw what the camera sees (even if model isn't loaded)
     const sctx = small.getContext("2d");
-    sctx.drawImage(videoRef.current, 0, 0, 28, 28);
+    sctx.drawImage(video, 0, 0, 28, 28);
 
-    // draw preview (scaled)
-    const preview = previewRef.current;
     const pctx = preview.getContext("2d");
     pctx.imageSmoothingEnabled = false;
     pctx.drawImage(small, 0, 0, preview.width, preview.height);
 
-    // make input tensor inside tidy
+    // If model isn't ready or failed to load, just show preview and loop
+    if (!model) {
+      rafRef.current = requestAnimationFrame(predictLoop);
+      return;
+    }
+
+    // From here: run prediction
     const tensor = tf.tidy(() => {
       let t = tf.browser.fromPixels(small); // [28,28,3]
       t = tf.image.rgbToGrayscale(t).squeeze(); // [28,28]
@@ -143,7 +151,6 @@ export default function CameraPredictor() {
 
     let out = null;
     try {
-      // model.predict can return Tensor, Array<Tensor>, or {outputName: Tensor}
       out = model.predict(tensor);
 
       let tensorOut;
@@ -271,8 +278,8 @@ export default function CameraPredictor() {
           </div>
           {!model && !errMsg && (
             <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-              Model still loading... camera can start, predictions appear when
-              the model is ready.
+              Model still loading (or failed). Camera preview works; predictions
+              will appear once the model loads.
             </div>
           )}
         </div>
@@ -306,7 +313,7 @@ export default function CameraPredictor() {
               width: 56,
               height: 56,
               imageRendering: "pixelated",
-              border: "1px solid #eee",
+              border: "1px solid "#eee",
             }}
           />
           <div style={{ marginTop: 12 }}>
