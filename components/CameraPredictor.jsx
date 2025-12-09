@@ -143,9 +143,6 @@ export default function CameraPredictor() {
       let t = tf.browser.fromPixels(small); // [28,28,3]
       t = tf.image.rgbToGrayscale(t).squeeze(); // [28,28]
       t = t.div(255.0); // [0,1]
-      // If needed: invert or map to [-1,1]
-      // t = tf.sub(1, t);   // invert
-      // t = t.mul(2).sub(1); // to [-1,1]
       return t.expandDims(0).expandDims(-1); // [1,28,28,1]
     });
 
@@ -313,7 +310,7 @@ export default function CameraPredictor() {
               width: 56,
               height: 56,
               imageRendering: "pixelated",
-              border: "1px solid "#eee",
+              border: "1px solid #eee", // ✅ fixed syntax here
             }}
           />
           <div style={{ marginTop: 12 }}>
