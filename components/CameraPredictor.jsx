@@ -20,7 +20,7 @@ export default function CameraPredictor() {
     async function loadModel() {
       setErrMsg(null);
       try {
-        const m = await tf.loadGraphModel("/model.json");
+        const m = await tf.loadLayersModel("/model.json");
         console.log("Model loaded (graph):", m);
         if (!cancelled) setModel(m);
       } catch (err) {
@@ -114,7 +114,7 @@ export default function CameraPredictor() {
     // make input tensor inside tidy
     const tensor = tf.tidy(() => {
       let t = tf.browser.fromPixels(small); // [28,28,3]
-      t = t.mean(2).toFloat();              // [28,28]
+      t = tf.image.rgbToGrayscale(t).squeeze();             // [28,28]
       t = t.div(255.0);                     // [0,1]
       // If needed: invert or map to [-1,1]
       // t = tf.sub(1, t);   // invert
@@ -125,8 +125,8 @@ export default function CameraPredictor() {
     let out = null;
     try {
       // model.execute can return: Tensor, Array<Tensor>, or {outputName: Tensor}
-      out = model.execute(tensor);
-
+      out = model.predict(tensor);
+      
       // normalize to a single tensor and read its data async
       let tensorOut;
       if (Array.isArray(out)) {
@@ -189,7 +189,7 @@ export default function CameraPredictor() {
     setErrMsg(null);
     (async () => {
       try {
-        const m = await tf.loadGraphModel("/model.json");
+        const m = await tf.loadLayersModel("/model.json");
         console.log("Model reloaded:");
         setModel(m);
       } catch (err) {
