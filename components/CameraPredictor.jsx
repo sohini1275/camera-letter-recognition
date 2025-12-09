@@ -51,7 +51,7 @@ export default function CameraPredictor() {
         rafRef.current = null;
       }
       if (stream) {
-        stream.getTracks().forEach(t => t.stop());
+        stream.getTracks().forEach((t) => t.stop());
       }
       if (videoRef.current) {
         try {
@@ -67,7 +67,7 @@ export default function CameraPredictor() {
 
   // Start camera – allow even if model isn't loaded yet
   async function startCamera() {
-    if (running) return; // ✅ only block if already running
+    if (running) return; // only block if already running
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
@@ -77,7 +77,9 @@ export default function CameraPredictor() {
       setStream(s);
       await videoRef.current.play();
       setRunning(true);
-      if (!rafRef.current) rafRef.current = requestAnimationFrame(predictLoop);
+      if (!rafRef.current) {
+        rafRef.current = requestAnimationFrame(predictLoop);
+      }
     } catch (e) {
       console.error("Camera start error:", e);
       setErrMsg(String(e));
@@ -112,7 +114,7 @@ export default function CameraPredictor() {
       return;
     }
     if (!model || !videoRef.current || videoRef.current.readyState < 2) {
-      // ✅ camera can be running even if model isn't ready yet
+      // camera can be running even if model isn't ready yet
       rafRef.current = requestAnimationFrame(predictLoop);
       return;
     }
@@ -191,7 +193,9 @@ export default function CameraPredictor() {
     } finally {
       try {
         tf.dispose(tensor);
-      } catch (e) {}
+      } catch (e) {
+        /* ignore */
+      }
     }
 
     rafRef.current = requestAnimationFrame(predictLoop);
@@ -245,9 +249,10 @@ export default function CameraPredictor() {
             muted
           />
           <div style={{ marginTop: 8 }}>
+            {/* Start button: only disabled while camera is already running */}
             <button
               onClick={startCamera}
-              disabled={running} {/* ✅ only blocks if already running */}
+              disabled={running}
               style={{ marginRight: 8 }}
             >
               Start
@@ -266,8 +271,8 @@ export default function CameraPredictor() {
           </div>
           {!model && !errMsg && (
             <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-              Model still loading... camera will start, predictions appear when
-              ready.
+              Model still loading... camera can start, predictions appear when
+              the model is ready.
             </div>
           )}
         </div>
