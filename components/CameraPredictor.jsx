@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 
 export default function CameraPredictor() {
-  // Log TFJS version in the app
+  // Log TFJS version in the app (for debugging)
   useEffect(() => {
     (async () => {
       try {
@@ -19,6 +19,7 @@ export default function CameraPredictor() {
   const previewRef = useRef(null);
   const smallRef = useRef(null);
   const rafRef = useRef(null);
+  const drewOnceRef = useRef(false); // to log only once when we first draw
 
   const [model, setModel] = useState(null);
   const [running, setRunning] = useState(false);
@@ -26,7 +27,7 @@ export default function CameraPredictor() {
   const [errMsg, setErrMsg] = useState(null);
   const [stream, setStream] = useState(null);
 
-  // Try to load model once at mount (if it fails, we still show preview)
+  // Try to load model (even if it fails, preview will still work)
   useEffect(() => {
     let cancelled = false;
     async function loadModel() {
@@ -42,7 +43,6 @@ export default function CameraPredictor() {
     }
     loadModel();
 
-    // cleanup on unmount
     return () => {
       cancelled = true;
       if (rafRef.current) {
@@ -64,9 +64,9 @@ export default function CameraPredictor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Start camera – allow even if model isn't loaded yet
+  // Start camera – independent of model
   async function startCamera() {
-    if (running) return; // only block if already running
+    if (running) return;
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
@@ -77,6 +77,7 @@ export default function CameraPredictor() {
       setStream(s);
       await videoRef.current.play();
       setRunning(true);
+      drewOnceRef.current = false;
       if (!rafRef.current) {
         rafRef.current = requestAnimationFrame(previewLoop);
       }
@@ -86,7 +87,6 @@ export default function CameraPredictor() {
     }
   }
 
-  // Stop camera
   function stopCamera() {
     setRunning(false);
     if (rafRef.current) {
@@ -107,38 +107,60 @@ export default function CameraPredictor() {
     }
   }
 
-  // 🔁 Preview loop (NO TF / NO PREDICTION, just drawing)
-  async function previewLoop() {
-    if (!running) {
-      rafRef.current = null;
-      return;
+  // 🔁 Preview loop: just draws camera → 28×28 → scaled preview
+  function previewLoop() {
+    try {
+      if (!running) {
+        rafRef.current = null;
+        return;
+      }
+
+      const video = videoRef.current;
+      const small = smallRef.current;
+      const preview = previewRef.current;
+
+      if (!video || !small || !preview) {
+        // Refs not attached yet, try again next frame
+        rafRef.current = requestAnimationFrame(previewLoop);
+        return;
+      }
+
+      if (video.readyState < 2) {
+        // Video not ready yet
+        rafRef.current = requestAnimationFrame(previewLoop);
+        return;
+      }
+
+      const sctx = small.getContext("2d");
+      const pctx = preview.getContext("2d");
+
+      if (!sctx || !pctx) {
+        console.error("Canvas context missing");
+        rafRef.current = requestAnimationFrame(previewLoop);
+        return;
+      }
+
+      // Draw to 28×28
+      sctx.clearRect(0, 0, 28, 28);
+      sctx.drawImage(video, 0, 0, 28, 28);
+
+      // Draw scaled version
+      pctx.imageSmoothingEnabled = false;
+      pctx.clearRect(0, 0, preview.width, preview.height);
+      pctx.drawImage(small, 0, 0, preview.width, preview.height);
+
+      if (!drewOnceRef.current) {
+        console.log("✅ First preview frame drawn");
+        drewOnceRef.current = true;
+      }
+    } catch (err) {
+      console.error("previewLoop error:", err);
     }
-
-    const video = videoRef.current;
-    const small = smallRef.current;
-    const preview = previewRef.current;
-
-    // Need all elements and video must be ready
-    if (!video || !small || !preview || video.readyState < 2) {
-      rafRef.current = requestAnimationFrame(previewLoop);
-      return;
-    }
-
-    // Draw camera frame to 28x28 canvas
-    const sctx = small.getContext("2d");
-    sctx.drawImage(video, 0, 0, 28, 28);
-
-    // Draw scaled-up version to preview canvas
-    const pctx = preview.getContext("2d");
-    pctx.imageSmoothingEnabled = false;
-    pctx.drawImage(small, 0, 0, preview.width, preview.height);
-
-    // (Optional) Later you can re-add TF prediction here
 
     rafRef.current = requestAnimationFrame(previewLoop);
   }
 
-  // Retry loading model (for after you fix compatibility)
+  // (Prediction-related functions left for later)
   function retryLoad() {
     setModel(null);
     setErrMsg(null);
@@ -186,7 +208,6 @@ export default function CameraPredictor() {
             muted
           />
           <div style={{ marginTop: 8 }}>
-            {/* Start button: only disabled while camera is already running */}
             <button
               onClick={startCamera}
               disabled={running}
@@ -209,7 +230,7 @@ export default function CameraPredictor() {
           {!model && (
             <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
               Model is not loaded in the browser yet (TFJS/Keras compatibility
-              issue). Camera preview below matches the 28×28 input used for
+              issue). Camera preview still matches the 28×28 input used for
               training in Python.
             </div>
           )}
