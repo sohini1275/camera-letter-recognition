@@ -3,11 +3,7 @@ import React, { useRef, useEffect, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 
 export default function CameraPredictor() {
-  import React, { useRef, useEffect, useState } from "react";
-import * as tf from "@tensorflow/tfjs";
-
-export default function CameraPredictor() {
-  // 🔹 ADD THIS EFFECT:
+  // 🔹 JUST THIS NEW EFFECT ADDED:
   useEffect(() => {
     (async () => {
       try {
@@ -18,7 +14,7 @@ export default function CameraPredictor() {
       }
     })();
   }, []);
-
+  // 🔹 END NEW CODE
 
   const videoRef = useRef(null);
   const previewRef = useRef(null);
@@ -131,8 +127,8 @@ export default function CameraPredictor() {
     // make input tensor inside tidy
     const tensor = tf.tidy(() => {
       let t = tf.browser.fromPixels(small); // [28,28,3]
-      t = tf.image.rgbToGrayscale(t).squeeze();             // [28,28]
-      t = t.div(255.0);                     // [0,1]
+      t = tf.image.rgbToGrayscale(t).squeeze(); // [28,28]
+      t = t.div(255.0); // [0,1]
       // If needed: invert or map to [-1,1]
       // t = tf.sub(1, t);   // invert
       // t = t.mul(2).sub(1); // to [-1,1]
@@ -141,41 +137,31 @@ export default function CameraPredictor() {
 
     let out = null;
     try {
-      // model.execute can return: Tensor, Array<Tensor>, or {outputName: Tensor}
+      // model.predict can return Tensor, Array<Tensor>, or {outputName: Tensor}
       out = model.predict(tensor);
       
-      // normalize to a single tensor and read its data async
       let tensorOut;
       if (Array.isArray(out)) {
         tensorOut = out[0];
       } else if (out && typeof out === 'object' && !('shape' in out)) {
-        // object/dict: pick the first property
         const keys = Object.keys(out);
         tensorOut = out[keys[0]];
       } else {
         tensorOut = out;
       }
 
-      // read probabilities asynchronously
       const probsArr = Array.from(await tensorOut.data());
 
-      // build top-3
       const top = probsArr
         .map((p, i) => ({ i, p }))
         .sort((a, b) => b.p - a.p)
         .slice(0, 3)
         .map(x => ({ index: x.i, letter: String.fromCharCode(65 + x.i), p: x.p }));
 
-      // debug logs to ensure state update runs
       console.log("DEBUG top before setPreds:", top);
-
-      // force React update by assigning new array instance
       setPreds(() => [...top]);
-
       console.log("DEBUG setPreds after force-update");
 
-
-      // dispose outputs (if array or dict, dispose all)
       if (Array.isArray(out)) {
         out.forEach(t => tf.dispose(t));
       } else if (out && typeof out === 'object' && !('shape' in out)) {
@@ -186,14 +172,12 @@ export default function CameraPredictor() {
     } catch (err) {
       console.error("predict error", err);
       setErrMsg(String(err));
-      // attempt to dispose any returned tensors if present
       try {
         if (Array.isArray(out)) out.forEach(t => tf.dispose(t));
         else if (out && typeof out === 'object' && !('shape' in out)) Object.values(out).forEach(t => tf.dispose(t));
         else tf.dispose(out);
-      } catch (e) { /* ignore disposal errors */ }
+      } catch (e) { /* ignore */ }
     } finally {
-      // dispose input tensor created by tidy (tidy already returns tensor - still call dispose to be safe)
       try { tf.dispose(tensor); } catch (e) {}
     }
 
@@ -216,7 +200,6 @@ export default function CameraPredictor() {
     })();
   }
 
-  // Capture & send labeled correction (image + label)
   async function sendCorrection(label) {
     const preview = previewRef.current;
     const dataUrl = preview.toDataURL("image/png");
@@ -237,23 +220,56 @@ export default function CameraPredictor() {
     <div style={{ fontFamily: 'sans-serif', maxWidth: 720 }}>
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <div>
-          <video ref={videoRef} width={320} height={240} style={{ borderRadius: 8, border: '1px solid #ddd' }} playsInline muted />
+          <video
+            ref={videoRef}
+            width={320}
+            height={240}
+            style={{ borderRadius: 8, border: '1px solid #ddd' }}
+            playsInline
+            muted
+          />
           <div style={{ marginTop: 8 }}>
             <button onClick={startCamera} disabled={running || !model} style={{ marginRight: 8 }}>Start</button>
             <button onClick={stopCamera} disabled={!running}>Stop</button>
-            <button onClick={() => { if (preds && preds[0]) sendCorrection(preds[0].letter); }} style={{ marginLeft: 8 }}>Send top-1 as correction</button>
+            <button
+              onClick={() => { if (preds && preds[0]) sendCorrection(preds[0].letter); }}
+              style={{ marginLeft: 8 }}
+            >
+              Send top-1 as correction
+            </button>
           </div>
         </div>
 
         <div>
           <div style={{ marginBottom: 8 }}>Preview (what the model sees)</div>
-          <canvas ref={previewRef} width={140} height={140} style={{ width: 140, height: 140, imageRendering: 'pixelated', border: '1px solid #ccc', borderRadius: 6 }} />
+          <canvas
+            ref={previewRef}
+            width={140}
+            height={140}
+            style={{
+              width: 140,
+              height: 140,
+              imageRendering: 'pixelated',
+              border: '1px solid #ccc',
+              borderRadius: 6
+            }}
+          />
           <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>28×28 preview (scaled)</div>
         </div>
 
         <div>
           <div style={{ marginBottom: 8 }}>28×28 raw</div>
-          <canvas ref={smallRef} width={28} height={28} style={{ width: 56, height: 56, imageRendering: 'pixelated', border: '1px solid #eee' }} />
+          <canvas
+            ref={smallRef}
+            width={28}
+            height={28}
+            style={{
+              width: 56,
+              height: 56,
+              imageRendering: 'pixelated',
+              border: '1px solid #eee'
+            }}
+          />
           <div style={{ marginTop: 12 }}>
             <strong>Top predictions</strong>
             <ol>
@@ -267,10 +283,15 @@ export default function CameraPredictor() {
 
       {errMsg && (
         <div style={{ color: 'red', marginTop: 12 }}>
-          Error: {errMsg} <button onClick={retryLoad} style={{ marginLeft: 8 }}>Retry load</button>
+          Error: {errMsg}
+          <button onClick={retryLoad} style={{ marginLeft: 8 }}>Retry load</button>
         </div>
       )}
-      {!model && !errMsg && <div style={{ marginTop: 12 }}>Loading model... make sure /model.json is present in <code>/public</code>.</div>}
+      {!model && !errMsg && (
+        <div style={{ marginTop: 12 }}>
+          Loading model... make sure /model.json is present in <code>/public</code>.
+        </div>
+      )}
     </div>
   );
 }
