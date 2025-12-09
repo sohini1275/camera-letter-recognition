@@ -3,6 +3,23 @@ import React, { useRef, useEffect, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 
 export default function CameraPredictor() {
+  import React, { useRef, useEffect, useState } from "react";
+import * as tf from "@tensorflow/tfjs";
+
+export default function CameraPredictor() {
+  // 🔹 ADD THIS EFFECT:
+  useEffect(() => {
+    (async () => {
+      try {
+        await tf.ready();
+        console.log("TFJS version inside app:", tf.version.tfjs);
+      } catch (e) {
+        console.error("Error checking TFJS version:", e);
+      }
+    })();
+  }, []);
+
+
   const videoRef = useRef(null);
   const previewRef = useRef(null);
   const smallRef = useRef(null);
