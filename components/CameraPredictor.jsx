@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 
 export default function CameraPredictor() {
-  // 🔹 JUST THIS NEW EFFECT ADDED:
+  // Log TFJS version in the app
   useEffect(() => {
     (async () => {
       try {
@@ -14,7 +14,6 @@ export default function CameraPredictor() {
       }
     })();
   }, []);
-  // 🔹 END NEW CODE
 
   const videoRef = useRef(null);
   const previewRef = useRef(null);
@@ -58,19 +57,21 @@ export default function CameraPredictor() {
         try {
           videoRef.current.pause();
           videoRef.current.srcObject = null;
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+          /* ignore */
+        }
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Start camera
+  // Start camera – allow even if model isn't loaded yet
   async function startCamera() {
-    if (running || !model) return;
+    if (running) return; // ✅ only block if already running
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
-        audio: false
+        audio: false,
       });
       videoRef.current.srcObject = s;
       setStream(s);
@@ -91,14 +92,16 @@ export default function CameraPredictor() {
       rafRef.current = null;
     }
     if (stream) {
-      stream.getTracks().forEach(t => t.stop());
+      stream.getTracks().forEach((t) => t.stop());
       setStream(null);
     }
     if (videoRef.current) {
       try {
         videoRef.current.pause();
         videoRef.current.srcObject = null;
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        /* ignore */
+      }
     }
   }
 
@@ -109,6 +112,7 @@ export default function CameraPredictor() {
       return;
     }
     if (!model || !videoRef.current || videoRef.current.readyState < 2) {
+      // ✅ camera can be running even if model isn't ready yet
       rafRef.current = requestAnimationFrame(predictLoop);
       return;
     }
@@ -139,11 +143,11 @@ export default function CameraPredictor() {
     try {
       // model.predict can return Tensor, Array<Tensor>, or {outputName: Tensor}
       out = model.predict(tensor);
-      
+
       let tensorOut;
       if (Array.isArray(out)) {
         tensorOut = out[0];
-      } else if (out && typeof out === 'object' && !('shape' in out)) {
+      } else if (out && typeof out === "object" && !("shape" in out)) {
         const keys = Object.keys(out);
         tensorOut = out[keys[0]];
       } else {
@@ -156,16 +160,20 @@ export default function CameraPredictor() {
         .map((p, i) => ({ i, p }))
         .sort((a, b) => b.p - a.p)
         .slice(0, 3)
-        .map(x => ({ index: x.i, letter: String.fromCharCode(65 + x.i), p: x.p }));
+        .map((x) => ({
+          index: x.i,
+          letter: String.fromCharCode(65 + x.i),
+          p: x.p,
+        }));
 
       console.log("DEBUG top before setPreds:", top);
       setPreds(() => [...top]);
       console.log("DEBUG setPreds after force-update");
 
       if (Array.isArray(out)) {
-        out.forEach(t => tf.dispose(t));
-      } else if (out && typeof out === 'object' && !('shape' in out)) {
-        Object.values(out).forEach(t => tf.dispose(t));
+        out.forEach((t) => tf.dispose(t));
+      } else if (out && typeof out === "object" && !("shape" in out)) {
+        Object.values(out).forEach((t) => tf.dispose(t));
       } else {
         tf.dispose(out);
       }
@@ -173,12 +181,17 @@ export default function CameraPredictor() {
       console.error("predict error", err);
       setErrMsg(String(err));
       try {
-        if (Array.isArray(out)) out.forEach(t => tf.dispose(t));
-        else if (out && typeof out === 'object' && !('shape' in out)) Object.values(out).forEach(t => tf.dispose(t));
+        if (Array.isArray(out)) out.forEach((t) => tf.dispose(t));
+        else if (out && typeof out === "object" && !("shape" in out))
+          Object.values(out).forEach((t) => tf.dispose(t));
         else tf.dispose(out);
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        /* ignore */
+      }
     } finally {
-      try { tf.dispose(tensor); } catch (e) {}
+      try {
+        tf.dispose(tensor);
+      } catch (e) {}
     }
 
     rafRef.current = requestAnimationFrame(predictLoop);
@@ -204,40 +217,59 @@ export default function CameraPredictor() {
     const preview = previewRef.current;
     const dataUrl = preview.toDataURL("image/png");
     try {
-      await fetch('/api/log-example', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-feedback-token': process.env.NEXT_PUBLIC_FEEDBACK_TOKEN || '' },
-        body: JSON.stringify({ imageDataUrl: dataUrl, label })
+      await fetch("/api/log-example", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-feedback-token": process.env.NEXT_PUBLIC_FEEDBACK_TOKEN || "",
+        },
+        body: JSON.stringify({ imageDataUrl: dataUrl, label }),
       });
-      alert('Thanks — example submitted.');
+      alert("Thanks — example submitted.");
     } catch (err) {
       console.error(err);
-      alert('Failed to send example.');
+      alert("Failed to send example.");
     }
   }
 
   return (
-    <div style={{ fontFamily: 'sans-serif', maxWidth: 720 }}>
-      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+    <div style={{ fontFamily: "sans-serif", maxWidth: 720 }}>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
         <div>
           <video
             ref={videoRef}
             width={320}
             height={240}
-            style={{ borderRadius: 8, border: '1px solid #ddd' }}
+            style={{ borderRadius: 8, border: "1px solid #ddd" }}
             playsInline
             muted
           />
           <div style={{ marginTop: 8 }}>
-            <button onClick={startCamera} disabled={running || !model} style={{ marginRight: 8 }}>Start</button>
-            <button onClick={stopCamera} disabled={!running}>Stop</button>
             <button
-              onClick={() => { if (preds && preds[0]) sendCorrection(preds[0].letter); }}
+              onClick={startCamera}
+              disabled={running} {/* ✅ only blocks if already running */}
+              style={{ marginRight: 8 }}
+            >
+              Start
+            </button>
+            <button onClick={stopCamera} disabled={!running}>
+              Stop
+            </button>
+            <button
+              onClick={() => {
+                if (preds && preds[0]) sendCorrection(preds[0].letter);
+              }}
               style={{ marginLeft: 8 }}
             >
               Send top-1 as correction
             </button>
           </div>
+          {!model && !errMsg && (
+            <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
+              Model still loading... camera will start, predictions appear when
+              ready.
+            </div>
+          )}
         </div>
 
         <div>
@@ -249,12 +281,14 @@ export default function CameraPredictor() {
             style={{
               width: 140,
               height: 140,
-              imageRendering: 'pixelated',
-              border: '1px solid #ccc',
-              borderRadius: 6
+              imageRendering: "pixelated",
+              border: "1px solid #ccc",
+              borderRadius: 6,
             }}
           />
-          <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>28×28 preview (scaled)</div>
+          <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
+            28×28 preview (scaled)
+          </div>
         </div>
 
         <div>
@@ -266,30 +300,39 @@ export default function CameraPredictor() {
             style={{
               width: 56,
               height: 56,
-              imageRendering: 'pixelated',
-              border: '1px solid #eee'
+              imageRendering: "pixelated",
+              border: "1px solid #eee",
             }}
           />
           <div style={{ marginTop: 12 }}>
             <strong>Top predictions</strong>
             <ol>
-              {preds.length ? preds.map(p => (
-                <li key={p.index}>{p.letter} — {(p.p * 100).toFixed(1)}%</li>
-              )) : <li>—</li>}
+              {preds.length ? (
+                preds.map((p) => (
+                  <li key={p.index}>
+                    {p.letter} — {(p.p * 100).toFixed(1)}%
+                  </li>
+                ))
+              ) : (
+                <li>—</li>
+              )}
             </ol>
           </div>
         </div>
       </div>
 
       {errMsg && (
-        <div style={{ color: 'red', marginTop: 12 }}>
+        <div style={{ color: "red", marginTop: 12 }}>
           Error: {errMsg}
-          <button onClick={retryLoad} style={{ marginLeft: 8 }}>Retry load</button>
+          <button onClick={retryLoad} style={{ marginLeft: 8 }}>
+            Retry load
+          </button>
         </div>
       )}
       {!model && !errMsg && (
         <div style={{ marginTop: 12 }}>
-          Loading model... make sure /model.json is present in <code>/public</code>.
+          Loading model... make sure /model.json is present in{" "}
+          <code>/public</code>.
         </div>
       )}
     </div>
