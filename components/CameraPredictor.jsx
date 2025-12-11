@@ -13,7 +13,7 @@ export default function CameraPredictor() {
   const [preds, setPreds] = useState([]);
   const [errMsg, setErrMsg] = useState(null);
   const [stream, setStream] = useState(null);
-  const [invertColors, setInvertColors] = useState(true); // NEW: Inversion toggle
+  const [invertColors, setInvertColors] = useState(true);
 
   // Load model once at mount
   useEffect(() => {
@@ -52,14 +52,15 @@ export default function CameraPredictor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Start camera
+  // Start camera - works independently of model
   async function startCamera() {
-    if (running || !model) return;
+    if (running) return;
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
         audio: false,
       });
+      if (!videoRef.current) return;
       videoRef.current.srcObject = s;
       setStream(s);
       await videoRef.current.play();
@@ -90,64 +91,76 @@ export default function CameraPredictor() {
     }
   }
 
-  // Prediction loop with inversion support
+  // Prediction loop - works even without model (shows preview)
   async function predictLoop() {
     if (!running) {
       rafRef.current = null;
       return;
     }
-    if (!model || !videoRef.current || videoRef.current.readyState < 2) {
+
+    // Check video readiness
+    if (!videoRef.current || videoRef.current.readyState < 2) {
       rafRef.current = requestAnimationFrame(predictLoop);
       return;
     }
 
     try {
-      // Draw to 28x28 canvas
+      // Always draw preview (works without model)
       const small = smallRef.current;
+      const preview = previewRef.current;
+
+      if (!small || !preview) {
+        rafRef.current = requestAnimationFrame(predictLoop);
+        return;
+      }
+
       const sctx = small.getContext("2d");
+      const pctx = preview.getContext("2d");
+
+      if (!sctx || !pctx) {
+        rafRef.current = requestAnimationFrame(predictLoop);
+        return;
+      }
+
+      // Draw to 28x28 canvas
       sctx.clearRect(0, 0, 28, 28);
       sctx.drawImage(videoRef.current, 0, 0, 28, 28);
 
       // Draw preview (scaled)
-      const preview = previewRef.current;
-      const pctx = preview.getContext("2d");
       pctx.imageSmoothingEnabled = false;
       pctx.clearRect(0, 0, preview.width, preview.height);
       pctx.drawImage(small, 0, 0, preview.width, preview.height);
 
-      // Create tensor with optional inversion
-      const tensor = tf.tidy(() => {
-        let t = tf.browser.fromPixels(small); // [28,28,3]
-        t = tf.image.rgbToGrayscale(t).squeeze(); // [28,28]
-        t = t.div(255.0); // [0,1]
-        
-        // Apply inversion if enabled (for black ink on white paper)
-        if (invertColors) {
-          t = tf.sub(1.0, t);
-        }
-        
-        return t.expandDims(0).expandDims(-1); // [1,28,28,1]
-      });
+      // Only predict if model is loaded
+      if (model) {
+        const tensor = tf.tidy(() => {
+          let t = tf.browser.fromPixels(small);
+          t = tf.image.rgbToGrayscale(t).squeeze();
+          t = t.div(255.0);
+          
+          if (invertColors) {
+            t = tf.sub(1.0, t);
+          }
+          
+          return t.expandDims(0).expandDims(-1);
+        });
 
-      // Predict
-      const out = model.predict(tensor);
-      const probsArr = Array.from(await out.data());
+        const out = model.predict(tensor);
+        const probsArr = Array.from(await out.data());
 
-      // Build top-3 predictions
-      const top = probsArr
-        .map((p, i) => ({ i, p }))
-        .sort((a, b) => b.p - a.p)
-        .slice(0, 3)
-        .map((x) => ({
-          index: x.i,
-          letter: String.fromCharCode(65 + x.i),
-          p: x.p,
-        }));
+        const top = probsArr
+          .map((p, i) => ({ i, p }))
+          .sort((a, b) => b.p - a.p)
+          .slice(0, 3)
+          .map((x) => ({
+            index: x.i,
+            letter: String.fromCharCode(65 + x.i),
+            p: x.p,
+          }));
 
-      setPreds(top);
-
-      // Cleanup
-      tf.dispose([tensor, out]);
+        setPreds(top);
+        tf.dispose([tensor, out]);
+      }
     } catch (err) {
       console.error("Predict error:", err);
       setErrMsg(String(err));
@@ -175,6 +188,7 @@ export default function CameraPredictor() {
   // Send correction feedback
   async function sendCorrection(label) {
     const preview = previewRef.current;
+    if (!preview) return;
     const dataUrl = preview.toDataURL("image/png");
     try {
       await fetch("/api/log-example", {
@@ -193,67 +207,113 @@ export default function CameraPredictor() {
   }
 
   return (
-    <div style={{ fontFamily: "sans-serif", maxWidth: 720 }}>
+    <div style={{ fontFamily: "sans-serif", maxWidth: 800, margin: "0 auto" }}>
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-        <div>
+        {/* Camera Section */}
+        <div style={{ flex: "1 1 320px" }}>
           <video
             ref={videoRef}
             width={320}
             height={240}
-            style={{ borderRadius: 8, border: "1px solid #ddd" }}
+            style={{ 
+              borderRadius: 8, 
+              border: "2px solid #ddd",
+              width: "100%",
+              maxWidth: 320,
+              height: "auto"
+            }}
             playsInline
             muted
           />
-          <div style={{ marginTop: 8 }}>
+          
+          {/* Control Buttons */}
+          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
               onClick={startCamera}
-              disabled={running || !model}
-              style={{ marginRight: 8 }}
+              disabled={running}
+              style={{
+                padding: "8px 16px",
+                background: running ? "#ccc" : "#2196F3",
+                color: "white",
+                border: "none",
+                borderRadius: 6,
+                cursor: running ? "not-allowed" : "pointer",
+                fontWeight: 600,
+                fontSize: 14
+              }}
             >
-              Start
+              {running ? "Camera Running..." : "Start Camera"}
             </button>
-            <button onClick={stopCamera} disabled={!running}>
+            <button
+              onClick={stopCamera}
+              disabled={!running}
+              style={{
+                padding: "8px 16px",
+                background: !running ? "#ccc" : "#f44336",
+                color: "white",
+                border: "none",
+                borderRadius: 6,
+                cursor: !running ? "not-allowed" : "pointer",
+                fontWeight: 600,
+                fontSize: 14
+              }}
+            >
               Stop
             </button>
           </div>
           
-          {/* NEW: Inversion toggle button */}
-          <div style={{ marginTop: 8 }}>
+          {/* Inversion Toggle */}
+          <div style={{ marginTop: 12 }}>
             <button
               onClick={() => setInvertColors(!invertColors)}
               style={{
-                padding: "6px 12px",
+                padding: "8px 16px",
                 background: invertColors ? "#4CAF50" : "#ddd",
                 color: invertColors ? "white" : "#333",
                 border: "none",
-                borderRadius: 4,
+                borderRadius: 6,
                 cursor: "pointer",
-                fontWeight: 600
+                fontWeight: 600,
+                fontSize: 14,
+                width: "100%",
+                maxWidth: 320
               }}
             >
               {invertColors ? "✓ Inverted (Black on White)" : "Normal (White on Black)"}
             </button>
-            <div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>
-              Use "Inverted" for black pen on white paper
+            <div style={{ fontSize: 11, color: "#666", marginTop: 6, fontStyle: "italic" }}>
+              Toggle for black pen on white paper vs. white on black
             </div>
           </div>
 
-          <div style={{ marginTop: 8 }}>
-            <button
-              onClick={() => {
-                if (preds && preds[0]) sendCorrection(preds[0].letter);
-              }}
-              disabled={!preds[0]}
-              style={{ fontSize: 12 }}
-            >
-              Send top-1 as correction
-            </button>
-          </div>
+          {/* Correction Button */}
+          {model && (
+            <div style={{ marginTop: 12 }}>
+              <button
+                onClick={() => {
+                  if (preds && preds[0]) sendCorrection(preds[0].letter);
+                }}
+                disabled={!preds[0]}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  background: !preds[0] ? "#eee" : "#FF9800",
+                  color: !preds[0] ? "#999" : "white",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: !preds[0] ? "not-allowed" : "pointer"
+                }}
+              >
+                Send Correction Feedback
+              </button>
+            </div>
+          )}
         </div>
 
-        <div>
-          <div style={{ marginBottom: 8, fontWeight: 600 }}>
-            Preview (what model sees)
+        {/* Preview Section */}
+        <div style={{ flex: "0 0 auto" }}>
+          <div style={{ marginBottom: 8, fontWeight: 600, fontSize: 14 }}>
+            Preview (28×28)
           </div>
           <canvas
             ref={previewRef}
@@ -263,18 +323,21 @@ export default function CameraPredictor() {
               width: 140,
               height: 140,
               imageRendering: "pixelated",
-              border: "1px solid #ccc",
+              border: "2px solid #ccc",
               borderRadius: 6,
               background: "#f5f5f5",
             }}
           />
-          <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
-            28×28 preview (scaled)
+          <div style={{ fontSize: 11, color: "#666", marginTop: 6 }}>
+            What the model sees (scaled)
           </div>
         </div>
 
-        <div>
-          <div style={{ marginBottom: 8, fontWeight: 600 }}>28×28 raw</div>
+        {/* Raw Canvas + Predictions */}
+        <div style={{ flex: "0 0 auto" }}>
+          <div style={{ marginBottom: 8, fontWeight: 600, fontSize: 14 }}>
+            Raw Input
+          </div>
           <canvas
             ref={smallRef}
             width={28}
@@ -283,49 +346,81 @@ export default function CameraPredictor() {
               width: 56,
               height: 56,
               imageRendering: "pixelated",
-              border: "1px solid #eee",
+              border: "1px solid #ddd",
               background: "#f5f5f5",
+              borderRadius: 4
             }}
           />
-          <div style={{ marginTop: 12 }}>
-            <strong>Top predictions</strong>
-            <ol style={{ paddingLeft: 20, margin: "8px 0" }}>
-              {preds.length ? (
-                preds.map((p) => (
-                  <li key={p.index}>
-                    <strong style={{ fontSize: 16 }}>{p.letter}</strong> —{" "}
-                    {(p.p * 100).toFixed(1)}%
-                  </li>
-                ))
+          
+          {/* Predictions */}
+          <div style={{ marginTop: 16 }}>
+            <strong style={{ fontSize: 14 }}>Top Predictions:</strong>
+            <ol style={{ paddingLeft: 20, margin: "8px 0", fontSize: 14 }}>
+              {model ? (
+                preds.length ? (
+                  preds.map((p) => (
+                    <li key={p.index} style={{ marginBottom: 4 }}>
+                      <strong style={{ fontSize: 18, color: "#2196F3" }}>{p.letter}</strong>
+                      {" — "}
+                      <span style={{ color: "#666" }}>{(p.p * 100).toFixed(1)}%</span>
+                    </li>
+                  ))
+                ) : (
+                  <li style={{ color: "#999" }}>Waiting for predictions...</li>
+                )
               ) : (
-                <li style={{ color: "#999" }}>Waiting for predictions...</li>
+                <li style={{ color: "#999" }}>Model loading...</li>
               )}
             </ol>
           </div>
         </div>
       </div>
 
+      {/* Error Message */}
       {errMsg && (
         <div
           style={{
-            color: "red",
-            marginTop: 12,
+            color: "#d32f2f",
+            marginTop: 16,
             padding: 12,
-            background: "#fee",
+            background: "#ffebee",
             borderRadius: 6,
+            border: "1px solid #ef5350"
           }}
         >
           <strong>Error:</strong> {errMsg}
-          <button onClick={retryLoad} style={{ marginLeft: 8 }}>
-            Retry load
+          <button
+            onClick={retryLoad}
+            style={{
+              marginLeft: 12,
+              padding: "4px 12px",
+              background: "#f44336",
+              color: "white",
+              border: "none",
+              borderRadius: 4,
+              cursor: "pointer",
+              fontSize: 12
+            }}
+          >
+            Retry Load
           </button>
         </div>
       )}
 
+      {/* Loading Message */}
       {!model && !errMsg && (
-        <div style={{ marginTop: 12, color: "#666" }}>
-          Loading model... make sure <code>/public/model.json</code> and{" "}
-          <code>/public/group1-shard1of1.bin</code> are present.
+        <div
+          style={{
+            marginTop: 16,
+            padding: 12,
+            background: "#e3f2fd",
+            borderRadius: 6,
+            color: "#1976d2",
+            fontSize: 13
+          }}
+        >
+          📥 Loading model... Make sure <code style={{ background: "#fff", padding: "2px 6px", borderRadius: 3 }}>/public/model.json</code> and{" "}
+          <code style={{ background: "#fff", padding: "2px 6px", borderRadius: 3 }}>/public/group1-shard1of1.bin</code> are present.
         </div>
       )}
     </div>
