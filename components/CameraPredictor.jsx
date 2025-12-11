@@ -3,38 +3,28 @@ import React, { useRef, useEffect, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 
 export default function CameraPredictor() {
-  // Log TFJS version in the app (for debugging)
-  useEffect(() => {
-    (async () => {
-      try {
-        await tf.ready();
-        console.log("TFJS version inside app:", tf.version.tfjs);
-      } catch (e) {
-        console.error("Error checking TFJS version:", e);
-      }
-    })();
-  }, []);
-
   const videoRef = useRef(null);
   const previewRef = useRef(null);
   const smallRef = useRef(null);
   const rafRef = useRef(null);
-  const drewOnceRef = useRef(false); // to log only once when we first draw
 
   const [model, setModel] = useState(null);
   const [running, setRunning] = useState(false);
   const [preds, setPreds] = useState([]);
   const [errMsg, setErrMsg] = useState(null);
   const [stream, setStream] = useState(null);
+  const [invertColors, setInvertColors] = useState(true); // NEW: Inversion toggle
 
-  // Try to load model (even if it fails, preview will still work)
+  // Load model once at mount
   useEffect(() => {
     let cancelled = false;
     async function loadModel() {
       setErrMsg(null);
       try {
+        await tf.ready();
+        console.log("TFJS version:", tf.version.tfjs);
         const m = await tf.loadLayersModel("/model.json");
-        console.log("Model loaded (graph):", m);
+        console.log("Model loaded successfully:", m);
         if (!cancelled) setModel(m);
       } catch (err) {
         console.error("Model load failed:", err);
@@ -56,37 +46,32 @@ export default function CameraPredictor() {
         try {
           videoRef.current.pause();
           videoRef.current.srcObject = null;
-        } catch (e) {
-          /* ignore */
-        }
+        } catch (e) { /* ignore */ }
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Start camera – independent of model
+  // Start camera
   async function startCamera() {
-    if (running) return;
+    if (running || !model) return;
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
         audio: false,
       });
-      if (!videoRef.current) return;
       videoRef.current.srcObject = s;
       setStream(s);
       await videoRef.current.play();
       setRunning(true);
-      drewOnceRef.current = false;
-      if (!rafRef.current) {
-        rafRef.current = requestAnimationFrame(previewLoop);
-      }
+      if (!rafRef.current) rafRef.current = requestAnimationFrame(predictLoop);
     } catch (e) {
       console.error("Camera start error:", e);
       setErrMsg(String(e));
     }
   }
 
+  // Stop camera
   function stopCamera() {
     setRunning(false);
     if (rafRef.current) {
@@ -101,73 +86,84 @@ export default function CameraPredictor() {
       try {
         videoRef.current.pause();
         videoRef.current.srcObject = null;
-      } catch (e) {
-        /* ignore */
-      }
+      } catch (e) { /* ignore */ }
     }
   }
 
-  // 🔁 Preview loop: just draws camera → 28×28 → scaled preview
-  function previewLoop() {
+  // Prediction loop with inversion support
+  async function predictLoop() {
+    if (!running) {
+      rafRef.current = null;
+      return;
+    }
+    if (!model || !videoRef.current || videoRef.current.readyState < 2) {
+      rafRef.current = requestAnimationFrame(predictLoop);
+      return;
+    }
+
     try {
-      if (!running) {
-        rafRef.current = null;
-        return;
-      }
-
-      const video = videoRef.current;
+      // Draw to 28x28 canvas
       const small = smallRef.current;
-      const preview = previewRef.current;
-
-      if (!video || !small || !preview) {
-        // Refs not attached yet, try again next frame
-        rafRef.current = requestAnimationFrame(previewLoop);
-        return;
-      }
-
-      if (video.readyState < 2) {
-        // Video not ready yet
-        rafRef.current = requestAnimationFrame(previewLoop);
-        return;
-      }
-
       const sctx = small.getContext("2d");
-      const pctx = preview.getContext("2d");
-
-      if (!sctx || !pctx) {
-        console.error("Canvas context missing");
-        rafRef.current = requestAnimationFrame(previewLoop);
-        return;
-      }
-
-      // Draw to 28×28
       sctx.clearRect(0, 0, 28, 28);
-      sctx.drawImage(video, 0, 0, 28, 28);
+      sctx.drawImage(videoRef.current, 0, 0, 28, 28);
 
-      // Draw scaled version
+      // Draw preview (scaled)
+      const preview = previewRef.current;
+      const pctx = preview.getContext("2d");
       pctx.imageSmoothingEnabled = false;
       pctx.clearRect(0, 0, preview.width, preview.height);
       pctx.drawImage(small, 0, 0, preview.width, preview.height);
 
-      if (!drewOnceRef.current) {
-        console.log("✅ First preview frame drawn");
-        drewOnceRef.current = true;
-      }
+      // Create tensor with optional inversion
+      const tensor = tf.tidy(() => {
+        let t = tf.browser.fromPixels(small); // [28,28,3]
+        t = tf.image.rgbToGrayscale(t).squeeze(); // [28,28]
+        t = t.div(255.0); // [0,1]
+        
+        // Apply inversion if enabled (for black ink on white paper)
+        if (invertColors) {
+          t = tf.sub(1.0, t);
+        }
+        
+        return t.expandDims(0).expandDims(-1); // [1,28,28,1]
+      });
+
+      // Predict
+      const out = model.predict(tensor);
+      const probsArr = Array.from(await out.data());
+
+      // Build top-3 predictions
+      const top = probsArr
+        .map((p, i) => ({ i, p }))
+        .sort((a, b) => b.p - a.p)
+        .slice(0, 3)
+        .map((x) => ({
+          index: x.i,
+          letter: String.fromCharCode(65 + x.i),
+          p: x.p,
+        }));
+
+      setPreds(top);
+
+      // Cleanup
+      tf.dispose([tensor, out]);
     } catch (err) {
-      console.error("previewLoop error:", err);
+      console.error("Predict error:", err);
+      setErrMsg(String(err));
     }
 
-    rafRef.current = requestAnimationFrame(previewLoop);
+    rafRef.current = requestAnimationFrame(predictLoop);
   }
 
-  // (Prediction-related functions left for later)
+  // Retry loading model
   function retryLoad() {
     setModel(null);
     setErrMsg(null);
     (async () => {
       try {
         const m = await tf.loadLayersModel("/model.json");
-        console.log("Model reloaded:");
+        console.log("Model reloaded:", m);
         setModel(m);
       } catch (err) {
         console.error("Retry failed:", err);
@@ -176,6 +172,7 @@ export default function CameraPredictor() {
     })();
   }
 
+  // Send correction feedback
   async function sendCorrection(label) {
     const preview = previewRef.current;
     const dataUrl = preview.toDataURL("image/png");
@@ -197,7 +194,7 @@ export default function CameraPredictor() {
 
   return (
     <div style={{ fontFamily: "sans-serif", maxWidth: 720 }}>
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
         <div>
           <video
             ref={videoRef}
@@ -210,7 +207,7 @@ export default function CameraPredictor() {
           <div style={{ marginTop: 8 }}>
             <button
               onClick={startCamera}
-              disabled={running}
+              disabled={running || !model}
               style={{ marginRight: 8 }}
             >
               Start
@@ -218,26 +215,46 @@ export default function CameraPredictor() {
             <button onClick={stopCamera} disabled={!running}>
               Stop
             </button>
+          </div>
+          
+          {/* NEW: Inversion toggle button */}
+          <div style={{ marginTop: 8 }}>
+            <button
+              onClick={() => setInvertColors(!invertColors)}
+              style={{
+                padding: "6px 12px",
+                background: invertColors ? "#4CAF50" : "#ddd",
+                color: invertColors ? "white" : "#333",
+                border: "none",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontWeight: 600
+              }}
+            >
+              {invertColors ? "✓ Inverted (Black on White)" : "Normal (White on Black)"}
+            </button>
+            <div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>
+              Use "Inverted" for black pen on white paper
+            </div>
+          </div>
+
+          <div style={{ marginTop: 8 }}>
             <button
               onClick={() => {
                 if (preds && preds[0]) sendCorrection(preds[0].letter);
               }}
-              style={{ marginLeft: 8 }}
+              disabled={!preds[0]}
+              style={{ fontSize: 12 }}
             >
               Send top-1 as correction
             </button>
           </div>
-          {!model && (
-            <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-              Model is not loaded in the browser yet (TFJS/Keras compatibility
-              issue). Camera preview still matches the 28×28 input used for
-              training in Python.
-            </div>
-          )}
         </div>
 
         <div>
-          <div style={{ marginBottom: 8 }}>Preview (what the model sees)</div>
+          <div style={{ marginBottom: 8, fontWeight: 600 }}>
+            Preview (what model sees)
+          </div>
           <canvas
             ref={previewRef}
             width={140}
@@ -248,7 +265,7 @@ export default function CameraPredictor() {
               imageRendering: "pixelated",
               border: "1px solid #ccc",
               borderRadius: 6,
-              background: "#000",
+              background: "#f5f5f5",
             }}
           />
           <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
@@ -257,7 +274,7 @@ export default function CameraPredictor() {
         </div>
 
         <div>
-          <div style={{ marginBottom: 8 }}>28×28 raw</div>
+          <div style={{ marginBottom: 8, fontWeight: 600 }}>28×28 raw</div>
           <canvas
             ref={smallRef}
             width={28}
@@ -267,20 +284,21 @@ export default function CameraPredictor() {
               height: 56,
               imageRendering: "pixelated",
               border: "1px solid #eee",
-              background: "#000",
+              background: "#f5f5f5",
             }}
           />
           <div style={{ marginTop: 12 }}>
             <strong>Top predictions</strong>
-            <ol>
+            <ol style={{ paddingLeft: 20, margin: "8px 0" }}>
               {preds.length ? (
                 preds.map((p) => (
                   <li key={p.index}>
-                    {p.letter} — {(p.p * 100).toFixed(1)}%
+                    <strong style={{ fontSize: 16 }}>{p.letter}</strong> —{" "}
+                    {(p.p * 100).toFixed(1)}%
                   </li>
                 ))
               ) : (
-                <li>—</li>
+                <li style={{ color: "#999" }}>Waiting for predictions...</li>
               )}
             </ol>
           </div>
@@ -288,18 +306,26 @@ export default function CameraPredictor() {
       </div>
 
       {errMsg && (
-        <div style={{ color: "red", marginTop: 12 }}>
-          Error loading model in browser: {errMsg}
+        <div
+          style={{
+            color: "red",
+            marginTop: 12,
+            padding: 12,
+            background: "#fee",
+            borderRadius: 6,
+          }}
+        >
+          <strong>Error:</strong> {errMsg}
           <button onClick={retryLoad} style={{ marginLeft: 8 }}>
             Retry load
           </button>
         </div>
       )}
+
       {!model && !errMsg && (
-        <div style={{ marginTop: 12 }}>
-          Loading model... make sure /model.json is present in{" "}
-          <code>/public</code>. (For the review, you can show predictions from
-          your Python notebook.)
+        <div style={{ marginTop: 12, color: "#666" }}>
+          Loading model... make sure <code>/public/model.json</code> and{" "}
+          <code>/public/group1-shard1of1.bin</code> are present.
         </div>
       )}
     </div>
